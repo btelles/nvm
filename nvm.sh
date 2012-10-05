@@ -7,7 +7,13 @@
 
 # Auto detect the NVM_DIR
 if [ ! -d "$NVM_DIR" ]; then
-    export NVM_DIR=$(cd $(dirname ${BASH_SOURCE[0]:-$0}); pwd)
+    export NVM_DIR=$(cd $(dirname ${BASH_SOURCE[0]:-$0}) && pwd)
+fi
+
+# Make zsh glob matching behave same as bash
+# This fixes the "zsh: no matches found" errors
+if [ ! -z "$(which unsetopt 2>/dev/null)" ]; then
+    unsetopt nomatch 2>/dev/null
 fi
 
 # Expand a version using the version cache
@@ -21,9 +27,20 @@ nvm_version()
 
     VERSION=`nvm_ls $PATTERN | tail -n1`
     echo "$VERSION"
-    
+
     if [ "$VERSION" = 'N/A' ]; then
-        return 13
+        return
+    fi
+}
+
+nvm_remote_version()
+{
+    PATTERN=$1
+    VERSION=`nvm_ls_remote $PATTERN | tail -n1`
+    echo "v$VERSION"
+
+    if [ "$VERSION" = 'N/A' ]; then
+        return
     fi
 }
 
@@ -54,17 +71,32 @@ nvm_ls()
     return
 }
 
+nvm_ls_remote()
+{
+    PATTERN=$1
+    VERSIONS=`curl -s http://nodejs.org/dist/ \
+            | egrep -o 'v[0-9]+\.[0-9]+\.[0-9]+' \
+            | grep -w "${PATTERN}" \
+            | sort -t. -u -k 1.2,1n -k 2,2n -k 3,3n`
+    if [ ! "$VERSIONS" ]; then
+        echo "N/A"
+        return
+    fi
+    echo "$VERSIONS"
+    return
+}
+
 print_versions()
 {
     OUTPUT=''
     for VERSION in $1; do
         PADDED_VERSION=`printf '%10s' $VERSION`
         if [[ -d "$NVM_DIR/$VERSION" ]]; then
-             PADDED_VERSION="\033[0;34m$PADDED_VERSION\033[0m" 
+             PADDED_VERSION="\033[0;34m$PADDED_VERSION\033[0m"
         fi
-        OUTPUT="$OUTPUT\n$PADDED_VERSION" 
+        OUTPUT="$OUTPUT\n$PADDED_VERSION"
     done
-    echo -e "$OUTPUT" | column 
+    echo -e "$OUTPUT" | column
 }
 
 nvm()
@@ -86,6 +118,7 @@ nvm()
       echo "    nvm run <version> [<args>]  Run <version> with <args> as arguments"
       echo "    nvm ls                      List installed versions"
       echo "    nvm ls <version>            List versions matching a given description"
+      echo "    nvm ls-remote               List remote versions available for install"
       echo "    nvm deactivate              Undo effects of NVM on current shell"
       echo "    nvm alias [<pattern>]       Show all aliases beginning with <pattern>"
       echo "    nvm alias <name> <version>  Set an alias named <name> pointing to <version>"
@@ -103,12 +136,22 @@ nvm()
       if [ ! `which curl` ]; then
         echo 'NVM Needs curl to proceed.' >&2;
       fi
-      
-      if [ $# -ne 2 ]; then
+
+      if [ $# -lt 2 ]; then
         nvm help
         return
       fi
-      VERSION=`nvm_version $2`
+      VERSION=`nvm_remote_version $2`
+      ADDITIONAL_PARAMETERS=''
+      shift
+      shift
+      while [ $# -ne 0 ]
+      do
+        ADDITIONAL_PARAMETERS="$ADDITIONAL_PARAMETERS $1"
+        shift
+      done
+
+      echo "Additional options while compiling: $ADDITIONAL_PARAMETERS"
 
       [ -d "$NVM_DIR/$VERSION" ] && echo "$VERSION is already installed." && return
 
@@ -125,7 +168,7 @@ nvm()
         curl -C - --progress-bar $tarball -o "node-$VERSION.tar.gz" && \
         tar -xzf "node-$VERSION.tar.gz" && \
         cd "node-$VERSION" && \
-        ./configure --prefix="$NVM_DIR/$VERSION" && \
+        ./configure --prefix="$NVM_DIR/$VERSION" $ADDITIONAL_PARAMETERS && \
         make && \
         rm -f "$NVM_DIR/$VERSION" 2>/dev/null && \
         make install
@@ -140,10 +183,10 @@ nvm()
             if [[ "`expr match $VERSION '\(^v0\.2\.[0-2]$\)'`" != '' ]]; then
               echo "npm requires node v0.2.3 or higher"
             else
-              curl http://npmjs.org/install.sh | clean=yes npm_install=0.2.19 sh
+              curl https://npmjs.org/install.sh | clean=yes npm_install=0.2.19 sh
             fi
           else
-            curl http://npmjs.org/install.sh | clean=yes sh
+            curl https://npmjs.org/install.sh | clean=yes sh
           fi
         fi
       else
@@ -158,7 +201,8 @@ nvm()
       fi
       VERSION=`nvm_version $2`
       if [ ! -d $NVM_DIR/$VERSION ]; then
-        echo "$VERSION version is not installed yet"
+        echo "$VERSION version is not installed yet... installing"
+        nvm install $VERSION
         return;
       fi
 
@@ -240,6 +284,10 @@ nvm()
         nvm alias
       fi
       return
+    ;;
+    "ls-remote" | "list-remote" )
+        print_versions "`nvm_ls_remote $2`"
+        return
     ;;
     "alias" )
       mkdir -p $NVM_DIR/alias
